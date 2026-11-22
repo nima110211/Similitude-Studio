@@ -1,0 +1,8 @@
+{
+  "name": "Similitude Studio",
+  "description": "Interactive geometric similarity, homothety, and live twin-shape synthesis studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
