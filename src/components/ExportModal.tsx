@@ -24,11 +24,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       aria-modal="true"
       aria-labelledby="export-modal-title"
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 backdrop-blur-xs p-4"
-      onMouseDown={(e) => {
+      onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl p-6">
+      <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xl p-5 sm:p-6">
         <div className="flex items-start justify-between gap-4 mb-5">
           <div>
             <h2 id="export-modal-title" className="text-lg font-semibold text-slate-900 dark:text-slate-100">

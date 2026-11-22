@@ -232,8 +232,10 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
     const [zoom, setZoom] = useState(1);
     const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
     const [cursorClass, setCursorClass] = useState('cursor-crosshair');
+    const [polyUI, setPolyUI] = useState({ active: false, count: 0 });
+    const [selectedVertexIdx, setSelectedVertexIdx] = useState(-1);
 
-    // Interactive drawing refs (avoid React re-renders per mouse pixel while brushing)
+    // Interactive drawing refs (avoid React re-renders per pixel while brushing)
     const activeStrokeRef = useRef<Point[]>([]);
     const isBrushingRef = useRef(false);
     const polyPointsRef = useRef<Point[]>([]);
@@ -241,6 +243,17 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
     const mouseScreenRef = useRef<Point>({ x: 0, y: 0 });
     const mouseInsideRef = useRef(false);
     const spaceDownRef = useRef(false);
+
+    // Multi-touch pinch & active pointer tracking
+    const activePointersRef = useRef<Map<number, Point>>(new Map());
+    const activePointerIdRef = useRef<number | null>(null);
+    const pinchRef = useRef<{
+      dist: number;
+      mid: Point;
+      zoom: number;
+      pan: Point;
+      board: BoardRect;
+    } | null>(null);
 
     // Drag state refs
     const dragKindRef = useRef<DragKind>(null);
@@ -263,17 +276,33 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
     const stateRef = useRef(state);
     stateRef.current = state;
 
+    const zoomRef = useRef(zoom);
+    zoomRef.current = zoom;
+    const panRef = useRef(pan);
+    panRef.current = pan;
+
+    useEffect(() => {
+      if (state.activeTool !== 'edit') {
+        setSelectedVertexIdx(-1);
+      }
+    }, [state.activeTool]);
+
+    useEffect(() => {
+      setSelectedVertexIdx((idx) => (idx >= state.shape.points.length ? -1 : idx));
+    }, [state.shape.points.length]);
+
     const getBoardRects = useCallback(
       (w: number, h: number, mode = stateRef.current.stageMode): { left: BoardRect; right: BoardRect | null } => {
-        const padX = w < 640 ? 12 : 20;
-        const padTop = w < 640 ? 12 : 16;
-        const padBot = 78;
+        const isCompact = w < 640;
+        const padX = isCompact ? 12 : 20;
+        const padTop = isCompact ? 10 : 16;
+        const padBot = isCompact ? 104 : 78;
         const availW = Math.max(200, w - 2 * padX);
         const availH = Math.max(200, h - padTop - padBot);
 
         if (mode === 'split') {
-          if (w < 640) {
-            const gutter = 12;
+          if (isCompact) {
+            const gutter = 10;
             const bh = (availH - gutter) * 0.5;
             return {
               left: { x: padX, y: padTop, w: availW, h: bh },
@@ -297,19 +326,23 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
 
     const effectiveZoom = useCallback(
       (b: BoardRect, z = zoom): number => {
-        const minDim = Math.min(b.w, b.h);
-        const fitFactor = minDim < 320 ? Math.max(0.46, minDim / 340) : 1;
+        const fitFactor =
+          b.w < 460 || b.h < 320
+            ? Math.max(0.4, Math.min((b.w - 16) / 520, (b.h - 22) / 340))
+            : 1;
         return z * fitFactor;
       },
       [zoom],
     );
+
+    const boardCenterOffsetY = (b: BoardRect): number => (b.h < 250 ? 8 : 0);
 
     const srcWorldToScreen = useCallback(
       (p: Point, b: BoardRect, z = zoom, pn = pan): Point => {
         const ez = effectiveZoom(b, z);
         return {
           x: b.x + b.w * 0.5 + (p.x + pn.x) * ez,
-          y: b.y + b.h * 0.5 + (p.y + pn.y) * ez,
+          y: b.y + b.h * 0.5 + boardCenterOffsetY(b) + (p.y + pn.y) * ez,
         };
       },
       [zoom, pan, effectiveZoom],
@@ -320,7 +353,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         const ez = effectiveZoom(b, z);
         return {
           x: (s.x - (b.x + b.w * 0.5)) / ez - pn.x,
-          y: (s.y - (b.y + b.h * 0.5)) / ez - pn.y,
+          y: (s.y - (b.y + b.h * 0.5 + boardCenterOffsetY(b))) / ez - pn.y,
         };
       },
       [zoom, pan, effectiveZoom],
@@ -332,7 +365,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         const ez = effectiveZoom(b, z);
         return {
           x: b.x + b.w * 0.5 + (p.x + pn.x) * ez,
-          y: b.y + b.h * 0.5 + (p.y + pn.y) * ez,
+          y: b.y + b.h * 0.5 + boardCenterOffsetY(b) + (p.y + pn.y) * ez,
         };
       },
       [zoom, pan, effectiveZoom],
@@ -344,7 +377,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         const ez = effectiveZoom(b, z);
         return {
           x: (s.x - (b.x + b.w * 0.5)) / ez - pn.x,
-          y: (s.y - (b.y + b.h * 0.5)) / ez - pn.y,
+          y: (s.y - (b.y + b.h * 0.5 + boardCenterOffsetY(b))) / ez - pn.y,
         };
       },
       [zoom, pan, effectiveZoom],
@@ -362,6 +395,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
 
     const getTwinBboxHandles = useCallback(
       (twinPts: Point[], leftB: BoardRect, rightB: BoardRect | null) => {
+        const activeBoard = stateRef.current.stageMode === 'split' && rightB ? rightB : leftB;
         const sc = twinPts.map((p) => twinWorldToScreen(p, leftB, rightB));
         let minX = Infinity,
           maxX = -Infinity,
@@ -373,7 +407,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
           if (p.y < minY) minY = p.y;
           if (p.y > maxY) maxY = p.y;
         }
-        const pad = 12;
+        const pad = activeBoard.h < 250 ? 8 : 12;
         const bbox = {
           x: minX - pad,
           y: minY - pad,
@@ -386,7 +420,11 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
           { x: bbox.x + bbox.w, y: bbox.y + bbox.h },
           { x: bbox.x, y: bbox.y + bbox.h },
         ];
-        const rotHandle: Point = { x: bbox.x + bbox.w * 0.5, y: bbox.y - 26 };
+        const rotStem = activeBoard.h < 250 ? 16 : 26;
+        const rotHandle: Point = {
+          x: bbox.x + bbox.w * 0.5,
+          y: Math.max(activeBoard.y + 18, bbox.y - rotStem),
+        };
         return { bbox, corners, rotHandle };
       },
       [twinWorldToScreen],
@@ -613,17 +651,22 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
           const centerS = polygonCentroid(screenPts);
           ctx.save();
           ctx.font = '600 11px "IBM Plex Mono", monospace';
-          ctx.fillStyle = color;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
+          ctx.lineJoin = 'round';
+          ctx.lineWidth = 3.5;
+          ctx.strokeStyle = palette.boardBg;
+          ctx.fillStyle = color;
           for (let i = 0; i < screenPts.length; i++) {
             const sp = screenPts[i];
             const dx = sp.x - centerS.x;
             const dy = sp.y - centerS.y;
             const d = Math.max(1e-3, Math.hypot(dx, dy));
-            const lx = sp.x + (dx / d) * 16;
-            const ly = sp.y + (dy / d) * 16;
-            ctx.fillText(vertexName(i) + (isTwin ? '′' : ''), lx, ly);
+            const lx = sp.x + (dx / d) * 15;
+            const ly = sp.y + (dy / d) * 15;
+            const lbl = vertexName(i) + (isTwin ? '′' : '');
+            ctx.strokeText(lbl, lx, ly);
+            ctx.fillText(lbl, lx, ly);
           }
           ctx.restore();
         };
@@ -671,19 +714,19 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
 
           const isEdit = st.activeTool === 'edit' && !forExport;
           if (showDetail || isEdit || isPolyDrawingRef.current) {
-            const nodeR = screenPts.length <= 28 ? 4.2 : 2.8;
+            const nodeR = screenPts.length <= 28 ? 4.4 : 2.8;
             for (let i = 0; i < screenPts.length; i++) {
               const sp = screenPts[i];
-              const isHov = !forExport && i === hoverVertexRef.current;
+              const isHov = !forExport && (i === hoverVertexRef.current || (isEdit && i === selectedVertexIdx));
               if (isHov) {
-                ctx.fillStyle = hexToRgba(palette.srcNode, 0.25);
+                ctx.fillStyle = hexToRgba(palette.srcNode, 0.28);
                 ctx.beginPath();
-                ctx.arc(sp.x, sp.y, 11, 0, Math.PI * 2);
+                ctx.arc(sp.x, sp.y, 12, 0, Math.PI * 2);
                 ctx.fill();
               }
               if (showDetail || isEdit || i === 0) {
                 ctx.beginPath();
-                ctx.arc(sp.x, sp.y, nodeR + (isHov ? 1.4 : 0), 0, Math.PI * 2);
+                ctx.arc(sp.x, sp.y, nodeR + (isHov ? 1.6 : 0), 0, Math.PI * 2);
                 ctx.fillStyle = isEdit || isHov ? palette.srcNode : palette.boardBg;
                 ctx.fill();
                 ctx.lineWidth = 1.6;
@@ -693,21 +736,33 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
             }
           }
 
-          if (isEdit && hoverMidpointRef.current) {
-            const ms = srcWorldToScreen(hoverMidpointRef.current.point, b);
-            ctx.beginPath();
-            ctx.arc(ms.x, ms.y, 6, 0, Math.PI * 2);
-            ctx.fillStyle = palette.boardBg;
-            ctx.fill();
-            ctx.strokeStyle = palette.srcNode;
-            ctx.lineWidth = 1.4;
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(ms.x - 3, ms.y);
-            ctx.lineTo(ms.x + 3, ms.y);
-            ctx.moveTo(ms.x, ms.y - 3);
-            ctx.lineTo(ms.x, ms.y + 3);
-            ctx.stroke();
+          // In Nodes (edit) mode, show tappable edge midpoint handles so touch users can insert vertices
+          if (isEdit && pts.length >= 2 && pts.length <= 20) {
+            const edgeCount = active.isClosed ? pts.length : pts.length - 1;
+            for (let i = 0; i < edgeCount; i++) {
+              const j = (i + 1) % pts.length;
+              const midW = { x: 0.5 * (pts[i].x + pts[j].x), y: 0.5 * (pts[i].y + pts[j].y) };
+              const ms = srcWorldToScreen(midW, b);
+              const isHoveredMid = hoverMidpointRef.current?.edgeIdx === i;
+              const r = isHoveredMid ? 6.5 : 4.5;
+              ctx.save();
+              ctx.globalAlpha = isHoveredMid ? 1 : 0.72;
+              ctx.beginPath();
+              ctx.arc(ms.x, ms.y, r, 0, Math.PI * 2);
+              ctx.fillStyle = palette.boardBg;
+              ctx.fill();
+              ctx.strokeStyle = palette.srcNode;
+              ctx.lineWidth = isHoveredMid ? 1.5 : 1.1;
+              ctx.stroke();
+              ctx.beginPath();
+              const cross = isHoveredMid ? 3 : 2.2;
+              ctx.moveTo(ms.x - cross, ms.y);
+              ctx.lineTo(ms.x + cross, ms.y);
+              ctx.moveTo(ms.x, ms.y - cross);
+              ctx.lineTo(ms.x, ms.y + cross);
+              ctx.stroke();
+              ctx.restore();
+            }
           }
 
           if (showDetail && st.guides.showLabels) {
@@ -1133,6 +1188,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         themeMode,
         zoom,
         pan,
+        selectedVertexIdx,
         getBoardRects,
         srcWorldToScreen,
         screenToSrcWorld,
@@ -1169,7 +1225,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         renderCanvas(ctx, size.width, size.height, false);
       }
-    }, [size, state, themeMode, zoom, pan, renderCanvas]);
+    }, [size, state, themeMode, zoom, pan, selectedVertexIdx, renderCanvas]);
 
     // Imperative API for Export & Camera
     useImperativeHandle(ref, () => ({
@@ -1207,6 +1263,44 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
       }),
     }));
 
+    const finishPendingPolygon = useCallback(() => {
+      if (!isPolyDrawingRef.current) return;
+      const pts = polyPointsRef.current;
+      if (pts.length >= 3) {
+        onCommitShape({ points: pts.map((p) => ({ ...p })), isClosed: true, isSmooth: false });
+      } else if (pts.length === 2) {
+        onCommitShape({ points: pts.map((p) => ({ ...p })), isClosed: false, isSmooth: false });
+      }
+      isPolyDrawingRef.current = false;
+      polyPointsRef.current = [];
+      setPolyUI({ active: false, count: 0 });
+      renderCanvas();
+    }, [onCommitShape, renderCanvas]);
+
+    const undoPendingPolygonPoint = useCallback(() => {
+      if (!isPolyDrawingRef.current || polyPointsRef.current.length === 0) return;
+      polyPointsRef.current.pop();
+      const count = polyPointsRef.current.length;
+      if (count === 0) isPolyDrawingRef.current = false;
+      setPolyUI({ active: count > 0, count });
+      renderCanvas();
+    }, [renderCanvas]);
+
+    const cancelPendingPolygon = useCallback(() => {
+      if (!isPolyDrawingRef.current) return;
+      isPolyDrawingRef.current = false;
+      polyPointsRef.current = [];
+      setPolyUI({ active: false, count: 0 });
+      renderCanvas();
+    }, [renderCanvas]);
+
+    const finishPolyRef = useRef(finishPendingPolygon);
+    finishPolyRef.current = finishPendingPolygon;
+    const undoPolyRef = useRef(undoPendingPolygonPoint);
+    undoPolyRef.current = undoPendingPolygonPoint;
+    const cancelPolyRef = useRef(cancelPendingPolygon);
+    cancelPolyRef.current = cancelPendingPolygon;
+
     // Keyboard shortcuts for Spacebar pan & pending polygon finish/cancel
     useEffect(() => {
       const onKeyDown = (e: KeyboardEvent) => {
@@ -1215,17 +1309,11 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
           spaceDownRef.current = true;
           setCursorClass('cursor-grab');
         } else if (e.key === 'Backspace' && isPolyDrawingRef.current) {
-          if (polyPointsRef.current.length > 0) {
-            polyPointsRef.current.pop();
-            if (polyPointsRef.current.length === 0) isPolyDrawingRef.current = false;
-            renderCanvas();
-          }
+          undoPolyRef.current();
         } else if (e.key === 'Escape' && isPolyDrawingRef.current) {
-          isPolyDrawingRef.current = false;
-          polyPointsRef.current = [];
-          renderCanvas();
+          cancelPolyRef.current();
         } else if (e.key === 'Enter' && isPolyDrawingRef.current) {
-          finishPendingPolygon();
+          finishPolyRef.current();
         }
       };
       const onKeyUp = (e: KeyboardEvent) => {
@@ -1240,25 +1328,18 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         window.removeEventListener('keydown', onKeyDown);
         window.removeEventListener('keyup', onKeyUp);
       };
-    });
+    }, []);
 
-    const finishPendingPolygon = () => {
-      if (!isPolyDrawingRef.current) return;
-      const pts = polyPointsRef.current;
-      if (pts.length >= 3) {
-        onCommitShape({ points: pts.map((p) => ({ ...p })), isClosed: true, isSmooth: false });
-      } else if (pts.length === 2) {
-        onCommitShape({ points: pts.map((p) => ({ ...p })), isClosed: false, isSmooth: false });
-      }
-      isPolyDrawingRef.current = false;
-      polyPointsRef.current = [];
-      renderCanvas();
-    };
-
-    const findHitVertex = (pos: Point, leftB: BoardRect, rightB: BoardRect | null, checkTwin: boolean): number => {
+    const findHitVertex = (
+      pos: Point,
+      leftB: BoardRect,
+      rightB: BoardRect | null,
+      checkTwin: boolean,
+      hitRadius = 13,
+    ): number => {
       const pts = stateRef.current.shape.points;
       let bestIdx = -1;
-      let bestD = 12.5;
+      let bestD = hitRadius;
       for (let i = 0; i < pts.length; i++) {
         const sp = srcWorldToScreen(pts[i], leftB);
         const d = dist(pos, sp);
@@ -1286,7 +1367,30 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
       return bestIdx;
     };
 
-    const updateHoverState = (pos: Point, leftB: BoardRect, rightB: BoardRect | null) => {
+    const findHitMidpoint = (
+      pos: Point,
+      leftB: BoardRect,
+      hitRadius = 13,
+    ): { edgeIdx: number; point: Point } | null => {
+      const st = stateRef.current;
+      const pts = st.shape.points;
+      if (pts.length < 2 || pts.length > 20) return null;
+      const edgeCount = st.shape.isClosed ? pts.length : pts.length - 1;
+      let best: { edgeIdx: number; point: Point } | null = null;
+      let bestD = hitRadius;
+      for (let i = 0; i < edgeCount; i++) {
+        const j = (i + 1) % pts.length;
+        const midW = { x: 0.5 * (pts[i].x + pts[j].x), y: 0.5 * (pts[i].y + pts[j].y) };
+        const d = dist(pos, srcWorldToScreen(midW, leftB));
+        if (d < bestD) {
+          bestD = d;
+          best = { edgeIdx: i, point: midW };
+        }
+      }
+      return best;
+    };
+
+    const updateHoverState = (pos: Point, leftB: BoardRect, rightB: BoardRect | null, hitMult = 1) => {
       const st = stateRef.current;
       const pts = st.shape.points;
       hoverVertexRef.current = -1;
@@ -1299,7 +1403,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
       }
 
       if (pts.length <= 28 || st.activeTool === 'edit') {
-        const hitV = findHitVertex(pos, leftB, rightB, true);
+        const hitV = findHitVertex(pos, leftB, rightB, true, 12.5 * hitMult);
         if (hitV >= 0) {
           hoverVertexRef.current = hitV;
           const lbl = vertexName(hitV);
@@ -1322,14 +1426,14 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
       });
 
       let bestEdge = -1;
-      let bestD = 9.5;
+      let bestD = 9.5 * hitMult;
       for (let i = 0; i < edgeCount; i++) {
         const j = (i + 1) % pts.length;
         const dSrc = pointToSegmentDistance(pos, srcWorldToScreen(pts[i], leftB), srcWorldToScreen(pts[j], leftB)).distance;
         if (dSrc < bestD) {
           bestD = dSrc;
           bestEdge = i;
-          if (st.activeTool === 'edit' && pts.length <= 30) {
+          if (st.activeTool === 'edit' && pts.length <= 20) {
             hoverMidpointRef.current = {
               edgeIdx: i,
               point: { x: 0.5 * (pts[i].x + pts[j].x), y: 0.5 * (pts[i].y + pts[j].y) },
@@ -1363,14 +1467,61 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
       onHoverNoteChange('');
     };
 
-    const getCanvasPos = (e: React.MouseEvent | React.WheelEvent): Point => {
+    const getCanvasPos = (e: { clientX: number; clientY: number }): Point => {
       const rect = canvasRef.current!.getBoundingClientRect();
       return { x: e.clientX - rect.left, y: e.clientY - rect.top };
     };
 
-    const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const startPinchGesture = () => {
+      const pts = Array.from(activePointersRef.current.values());
+      if (pts.length < 2) return;
+      const [p1, p2] = pts;
+      const mid = { x: 0.5 * (p1.x + p2.x), y: 0.5 * (p1.y + p2.y) };
+      const d = Math.max(12, dist(p1, p2));
+      const { left: leftB, right: rightB } = getBoardRects(size.width, size.height, stateRef.current.stageMode);
+      const inRight =
+        rightB &&
+        mid.x >= rightB.x &&
+        mid.x <= rightB.x + rightB.w &&
+        mid.y >= rightB.y &&
+        mid.y <= rightB.y + rightB.h;
+      const board = inRight && rightB ? rightB : leftB;
+      pinchRef.current = {
+        dist: d,
+        mid,
+        zoom: zoomRef.current,
+        pan: { ...panRef.current },
+        board,
+      };
+      // Abort accidental single-finger stroke when second finger arrives for pinch-zoom
+      isBrushingRef.current = false;
+      activeStrokeRef.current = [];
+      dragKindRef.current = null;
+      dragVertexIdxRef.current = -1;
+      activePointerIdRef.current = null;
+      renderCanvas();
+    };
+
+    const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
       const pos = getCanvasPos(e);
       mouseScreenRef.current = pos;
+      mouseInsideRef.current = true;
+      const isTouch = e.pointerType === 'touch';
+      const hitMult = isTouch ? 1.9 : 1;
+
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // Ignore if pointer capture is unavailable in synthetic test environments
+      }
+
+      activePointersRef.current.set(e.pointerId, pos);
+      if (activePointersRef.current.size >= 2) {
+        startPinchGesture();
+        return;
+      }
+
+      activePointerIdRef.current = e.pointerId;
       const st = stateRef.current;
       const { left: leftB, right: rightB } = getBoardRects(size.width, size.height, st.stageMode);
 
@@ -1388,23 +1539,24 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
           return;
         }
         if (st.activeTool === 'edit' && st.shape.points.length > (st.shape.isClosed ? 3 : 2)) {
-          const hit = findHitVertex(pos, leftB, rightB, false);
+          const hit = findHitVertex(pos, leftB, rightB, false, 13 * hitMult);
           if (hit >= 0) {
             const nextPts = st.shape.points.filter((_, idx) => idx !== hit);
             onCommitShape({ ...st.shape, points: nextPts });
             hoverVertexRef.current = -1;
+            setSelectedVertexIdx(-1);
             return;
           }
         }
         return;
       }
 
-      if (e.button !== 0) return;
+      if (e.button !== 0 && !isTouch) return;
 
       // 1. Homothety Center O drag
       if (st.stageMode === 'homothety') {
         const oS = srcWorldToScreen(st.homothetyCenter, leftB);
-        if (dist(pos, oS) <= 15) {
+        if (dist(pos, oS) <= 15 * hitMult) {
           dragKindRef.current = 'homothety_o';
           dragStartWorldRef.current = screenToSrcWorld(pos, leftB);
           dragInitialORef.current = { ...st.homothetyCenter };
@@ -1433,7 +1585,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         if (st.guides.showHandles && twinPts.length >= 2 && inTwinZone) {
           const { bbox, corners, rotHandle } = getTwinBboxHandles(twinPts, leftB, rightB);
           const centerPt = { x: bbox.x + bbox.w * 0.5, y: bbox.y + bbox.h * 0.5 };
-          if (dist(pos, rotHandle) <= 12) {
+          if (dist(pos, rotHandle) <= 12 * hitMult) {
             dragKindRef.current = 'twin_rotate';
             dragRefCenterRef.current = centerPt;
             dragInitialRotRef.current = st.twin.rotationDeg;
@@ -1441,7 +1593,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
             return;
           }
           for (const c of corners) {
-            if (dist(pos, c) <= 11) {
+            if (dist(pos, c) <= 11 * hitMult) {
               dragKindRef.current = 'twin_scale';
               dragRefCenterRef.current = centerPt;
               dragInitialKRef.current = st.twin.scaleMag;
@@ -1452,6 +1604,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         }
 
         if (st.stageMode === 'split' && (inRightBoard || st.activeTool === 'move')) {
+          updateHoverState(pos, leftB, rightB, hitMult);
           dragKindRef.current = 'twin_move';
           dragStartWorldRef.current = screenToTwinWorld(pos, leftB, rightB);
           dragInitialOffsetRef.current = { ...st.splitTwinOffset };
@@ -1474,27 +1627,33 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         return;
       }
 
-      // 3. Edit Nodes
+      // 3. Edit Nodes (works seamlessly with tap + drag on mobile!)
       if (st.activeTool === 'edit') {
         if (st.shape.points.length === 0) return;
-        const hitV = findHitVertex(pos, leftB, rightB, false);
+        const hitV = findHitVertex(pos, leftB, rightB, false, 13.5 * hitMult);
         if (hitV >= 0) {
           onCommitShape(st.shape); // push undo snapshot prior to live drag
+          setSelectedVertexIdx(hitV);
+          updateHoverState(pos, leftB, rightB, hitMult);
           dragKindRef.current = 'vertex';
           dragVertexIdxRef.current = hitV;
           setCursorClass('cursor-grabbing');
           return;
         }
-        if (hoverMidpointRef.current) {
-          const { edgeIdx, point } = hoverMidpointRef.current;
+        const midHit = hoverMidpointRef.current ?? findHitMidpoint(pos, leftB, 14 * hitMult);
+        if (midHit) {
+          const { edgeIdx, point } = midHit;
           const nextPts = [...st.shape.points];
           nextPts.splice(edgeIdx + 1, 0, { ...point });
           onCommitShape({ ...st.shape, points: nextPts });
+          setSelectedVertexIdx(edgeIdx + 1);
           dragKindRef.current = 'vertex';
           dragVertexIdxRef.current = edgeIdx + 1;
           hoverMidpointRef.current = null;
           return;
         }
+        setSelectedVertexIdx(-1);
+        updateHoverState(pos, leftB, rightB, hitMult);
         return;
       }
 
@@ -1513,6 +1672,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         activeStrokeRef.current = [worldP];
         hoverVertexRef.current = -1;
         hoverEdgeRef.current = -1;
+        onHoverNoteChange('');
         renderCanvas();
         return;
       }
@@ -1521,34 +1681,67 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         if (!isPolyDrawingRef.current) {
           isPolyDrawingRef.current = true;
           polyPointsRef.current = [worldP];
+          setPolyUI({ active: true, count: 1 });
         } else {
           if (polyPointsRef.current.length >= 3) {
             const p0S = srcWorldToScreen(polyPointsRef.current[0], leftB);
-            if (dist(pos, p0S) <= 15) {
+            if (dist(pos, p0S) <= 15 * hitMult) {
               finishPendingPolygon();
               return;
             }
           }
+          const ez = effectiveZoom(leftB, zoom);
           const last = polyPointsRef.current[polyPointsRef.current.length - 1];
-          if (dist(last, worldP) > 2 / zoom) {
+          if (dist(last, worldP) > 2 / ez) {
             polyPointsRef.current.push(worldP);
+            setPolyUI({ active: true, count: polyPointsRef.current.length });
           }
         }
         renderCanvas();
       }
     };
 
-    const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
       const pos = getCanvasPos(e);
       mouseScreenRef.current = pos;
       mouseInsideRef.current = true;
+      const isTouch = e.pointerType === 'touch';
+      const hitMult = isTouch ? 1.9 : 1;
+
+      if (activePointersRef.current.has(e.pointerId)) {
+        activePointersRef.current.set(e.pointerId, pos);
+      }
+
+      // Two-finger pinch-zoom & pan
+      if (activePointersRef.current.size >= 2 && pinchRef.current) {
+        const pts = Array.from(activePointersRef.current.values());
+        const [p1, p2] = pts;
+        const mid = { x: 0.5 * (p1.x + p2.x), y: 0.5 * (p1.y + p2.y) };
+        const d = Math.max(12, dist(p1, p2));
+        const base = pinchRef.current;
+        const nextZoom = Math.max(0.35, Math.min(3.8, base.zoom * (d / base.dist)));
+        const worldAtStart = screenToSrcWorld(base.mid, base.board, base.zoom, base.pan);
+        const ezNext = effectiveZoom(base.board, nextZoom);
+        setZoom(nextZoom);
+        setPan({
+          x: (mid.x - (base.board.x + base.board.w * 0.5)) / ezNext - worldAtStart.x,
+          y: (mid.y - (base.board.y + base.board.h * 0.5 + boardCenterOffsetY(base.board))) / ezNext - worldAtStart.y,
+        });
+        return;
+      }
+
+      if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) {
+        return;
+      }
+
       const st = stateRef.current;
       const { left: leftB, right: rightB } = getBoardRects(size.width, size.height, st.stageMode);
 
       if (dragKindRef.current === 'pan') {
+        const ez = effectiveZoom(leftB, zoom);
         setPan({
-          x: dragInitialPanRef.current.x + (pos.x - dragStartScreenRef.current.x) / zoom,
-          y: dragInitialPanRef.current.y + (pos.y - dragStartScreenRef.current.y) / zoom,
+          x: dragInitialPanRef.current.x + (pos.x - dragStartScreenRef.current.x) / ez,
+          y: dragInitialPanRef.current.y + (pos.y - dragStartScreenRef.current.y) / ez,
         });
         return;
       }
@@ -1596,9 +1789,10 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
       }
 
       if (isBrushingRef.current) {
+        const ez = effectiveZoom(leftB, zoom);
         const wp = screenToSrcWorld(pos, leftB);
         const stroke = activeStrokeRef.current;
-        if (stroke.length === 0 || dist(stroke[stroke.length - 1], wp) >= 3.5 / zoom) {
+        if (stroke.length === 0 || dist(stroke[stroke.length - 1], wp) >= 3.5 / ez) {
           stroke.push(wp);
           renderCanvas();
         }
@@ -1610,17 +1804,39 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         return;
       }
 
-      updateHoverState(pos, leftB, rightB);
-      if (st.activeTool === 'edit' || st.activeTool === 'move') {
-        setCursorClass(hoverVertexRef.current >= 0 || hoverMidpointRef.current ? 'cursor-pointer' : 'cursor-grab');
-      } else {
-        setCursorClass('cursor-crosshair');
+      if (!isTouch) {
+        updateHoverState(pos, leftB, rightB, hitMult);
+        if (st.activeTool === 'edit' || st.activeTool === 'move') {
+          setCursorClass(hoverVertexRef.current >= 0 || hoverMidpointRef.current ? 'cursor-pointer' : 'cursor-grab');
+        } else {
+          setCursorClass('cursor-crosshair');
+        }
+        renderCanvas();
       }
-      renderCanvas();
     };
 
-    const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (e.button === 0 && isBrushingRef.current) {
+    const finishPointerInteraction = (e: React.PointerEvent<HTMLCanvasElement>) => {
+      activePointersRef.current.delete(e.pointerId);
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // Ignore
+      }
+
+      if (activePointersRef.current.size < 2) {
+        pinchRef.current = null;
+      }
+      if (e.pointerId === activePointerIdRef.current) {
+        activePointerIdRef.current = null;
+      }
+
+      if (e.pointerType === 'touch') {
+        mouseInsideRef.current = false;
+      }
+
+      if (isBrushingRef.current) {
         isBrushingRef.current = false;
         const stroke = activeStrokeRef.current;
         if (stroke.length >= 3) {
@@ -1646,6 +1862,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
         dragVertexIdxRef.current = -1;
         setCursorClass(stateRef.current.activeTool === 'move' ? 'cursor-grab' : 'cursor-crosshair');
       }
+      renderCanvas();
     };
 
     const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -1654,13 +1871,14 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
       if (Math.abs(nextZoom - zoom) < 1e-5) return;
       const pos = getCanvasPos(e);
       const { left: leftB, right: rightB } = getBoardRects(size.width, size.height);
-      const inRight = rightB && pos.x >= rightB.x && pos.x <= rightB.x + rightB.w;
+      const inRight = rightB && pos.x >= rightB.x && pos.x <= rightB.x + rightB.w && pos.y >= rightB.y && pos.y <= rightB.y + rightB.h;
       const b = inRight && rightB ? rightB : leftB;
       const worldBefore = screenToSrcWorld(pos, b, zoom, pan);
+      const ezNext = effectiveZoom(b, nextZoom);
       setZoom(nextZoom);
       setPan({
-        x: (pos.x - (b.x + b.w * 0.5)) / nextZoom - worldBefore.x,
-        y: (pos.y - (b.y + b.h * 0.5)) / nextZoom - worldBefore.y,
+        x: (pos.x - (b.x + b.w * 0.5)) / ezNext - worldBefore.x,
+        y: (pos.y - (b.y + b.h * 0.5 + boardCenterOffsetY(b))) / ezNext - worldBefore.y,
       });
     };
 
@@ -1668,27 +1886,36 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
     const quickChips = [presets[0], presets[1], presets[3]];
     const isEmpty = state.shape.points.length === 0 && !isBrushingRef.current && !isPolyDrawingRef.current;
     const leftBoard = getBoardRects(size.width, size.height, state.stageMode).left;
+    const minVerts = state.shape.isClosed ? 3 : 2;
+    const canDeleteSelectedVertex =
+      state.activeTool === 'edit' && selectedVertexIdx >= 0 && state.shape.points.length > minVerts;
 
     return (
-      <div ref={containerRef} className="relative flex-1 h-[520px] min-h-[460px] lg:h-full overflow-hidden select-none">
+      <div
+        ref={containerRef}
+        className="relative flex-none h-[490px] sm:h-[540px] lg:flex-1 lg:h-full overflow-hidden select-none"
+      >
         <canvas
           ref={canvasRef}
           data-testid="studio-canvas"
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={finishPointerInteraction}
+          onPointerCancel={finishPointerInteraction}
           onDoubleClick={finishPendingPolygon}
           onContextMenu={(e) => e.preventDefault()}
-          onMouseLeave={() => {
-            mouseInsideRef.current = false;
-            hoverVertexRef.current = -1;
-            hoverEdgeRef.current = -1;
-            hoverMidpointRef.current = null;
-            onHoverNoteChange('');
-            renderCanvas();
+          onPointerLeave={(e) => {
+            if (e.pointerType !== 'touch' && dragKindRef.current === null && !isBrushingRef.current) {
+              mouseInsideRef.current = false;
+              hoverVertexRef.current = -1;
+              hoverEdgeRef.current = -1;
+              hoverMidpointRef.current = null;
+              onHoverNoteChange('');
+              renderCanvas();
+            }
           }}
           onWheel={handleWheel}
-          className={`block w-full h-full ${cursorClass}`}
+          className={`block w-full h-full touch-none ${cursorClass}`}
         />
 
         {/* Top-right Zoom / Fit control */}
@@ -1700,7 +1927,7 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
             onSetSplitOffset({ x: 0, y: 0 });
           }}
           title="Reset camera zoom & center"
-          className="absolute top-5 right-5 md:top-6 md:right-8 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white text-[11px] font-mono-tabular font-medium shadow-xs cursor-pointer transition-colors"
+          className="absolute top-3.5 right-4 sm:top-5 sm:right-7 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white text-[11px] font-mono-tabular font-medium shadow-xs cursor-pointer transition-colors"
         >
           {Math.round(zoom * 100)}% · Fit
         </button>
@@ -1714,22 +1941,22 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
               width: leftBoard.w,
               height: leftBoard.h,
             }}
-            className="pointer-events-none absolute flex flex-col items-center justify-center p-6 text-center"
+            className="pointer-events-none absolute flex flex-col items-center justify-center p-4 sm:p-6 text-center"
           >
-            <div className="max-w-sm space-y-3">
-              <div className="text-base font-semibold text-slate-900 dark:text-slate-100">
+            <div className="max-w-sm space-y-2 sm:space-y-3">
+              <div className="text-sm sm:text-base font-semibold text-slate-900 dark:text-slate-100">
                 Draw any shape to see its Similar Twin live
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                Sketch freehand with Brush, plot crisp vertices with Polygon, or start with a geometric specimen:
+              <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                Sketch with Brush, tap vertices with Polygon, or load a specimen:
               </p>
-              <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 pt-1">
+              <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 pt-0.5">
                 {quickChips.map((preset) => (
                   <button
                     key={preset.id}
                     type="button"
                     onClick={() => onLoadPreset(preset)}
-                    className="px-3.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-xs font-medium text-slate-800 dark:text-slate-100 shadow-xs transition-colors cursor-pointer whitespace-nowrap"
+                    className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-xs font-medium text-slate-800 dark:text-slate-100 shadow-xs transition-colors cursor-pointer whitespace-nowrap"
                   >
                     {preset.name.split(' ')[0]}
                   </button>
@@ -1739,132 +1966,192 @@ export const StudioCanvas = React.forwardRef<StudioCanvasHandle, StudioCanvasPro
           </div>
         )}
 
-        {/* Floating Bottom Workspace Dock */}
+        {/* Contextual Touch/Desktop Action Pill for Active Polygon or Selected Vertex */}
+        {(polyUI.active || canDeleteSelectedVertex) && (
+          <div className="absolute bottom-[98px] sm:bottom-[68px] left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 shadow-md whitespace-nowrap">
+            {polyUI.active ? (
+              <>
+                <span className="text-[11px] font-mono-tabular font-medium text-slate-500 dark:text-slate-400 px-1">
+                  {polyUI.count} pt{polyUI.count === 1 ? '' : 's'}
+                </span>
+                <button
+                  type="button"
+                  onClick={undoPendingPolygonPoint}
+                  className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+                >
+                  Undo Pt
+                </button>
+                {polyUI.count >= 2 && (
+                  <button
+                    type="button"
+                    onClick={finishPendingPolygon}
+                    className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 dark:bg-sky-500 dark:hover:bg-sky-400 text-xs font-semibold text-white dark:text-slate-950 cursor-pointer"
+                  >
+                    Finish
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={cancelPendingPolygon}
+                  className="px-2 py-1 rounded-lg text-xs font-medium text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-xs font-mono-tabular font-medium text-slate-700 dark:text-slate-200 px-1">
+                  Vertex {vertexName(selectedVertexIdx)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextPts = state.shape.points.filter((_, idx) => idx !== selectedVertexIdx);
+                    onCommitShape({ ...state.shape, points: nextPts });
+                    hoverVertexRef.current = -1;
+                    setSelectedVertexIdx(-1);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 dark:bg-red-950/60 dark:hover:bg-red-900/70 text-xs font-semibold text-red-700 dark:text-red-300 cursor-pointer"
+                >
+                  Delete Node
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Floating Bottom Workspace Dock (2 compact rows on mobile < sm, 1 sleek row on sm+) */}
         <div
           role="toolbar"
           aria-label="Drawing and workspace tools"
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 p-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 shadow-md max-w-[calc(100%-24px)] overflow-x-auto"
+          className="absolute bottom-2.5 sm:bottom-4 left-1/2 -translate-x-1/2 flex flex-col sm:flex-row items-center gap-1 p-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 shadow-md w-[calc(100%-24px)] sm:w-auto max-w-[calc(100%-24px)]"
         >
-          {[
-            { id: 'brush' as const, label: 'Brush', Icon: PenTool, title: 'Freehand Sketch (B)' },
-            { id: 'polygon' as const, label: 'Polygon', Icon: Hexagon, title: 'Vertex Polygon (P)' },
-            { id: 'edit' as const, label: 'Nodes', Icon: MousePointer2, title: 'Edit Vertices (E)' },
-            { id: 'move' as const, label: 'Twin', Icon: Move, title: 'Drag Twin / Center O (M)' },
-          ].map(({ id, label, Icon, title }) => {
-            const active = state.activeTool === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                title={title}
-                aria-pressed={active}
-                onClick={() => {
-                  if (id !== 'polygon' && isPolyDrawingRef.current) finishPendingPolygon();
-                  onSetTool(id);
-                }}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                  active
-                    ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{label}</span>
-              </button>
-            );
-          })}
+          <div className="flex items-center justify-center gap-1 w-full sm:w-auto">
+            {[
+              { id: 'brush' as const, label: 'Brush', Icon: PenTool, title: 'Freehand Sketch (B)' },
+              { id: 'polygon' as const, label: 'Polygon', Icon: Hexagon, title: 'Vertex Polygon (P)' },
+              { id: 'edit' as const, label: 'Nodes', Icon: MousePointer2, title: 'Edit Vertices (E)' },
+              { id: 'move' as const, label: 'Twin', Icon: Move, title: 'Drag Twin / Center O (M)' },
+            ].map(({ id, label, Icon, title }) => {
+              const active = state.activeTool === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  title={title}
+                  aria-pressed={active}
+                  onClick={() => {
+                    if (id !== 'polygon' && isPolyDrawingRef.current) finishPendingPolygon();
+                    onSetTool(id);
+                  }}
+                  className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950'
+                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
 
-          <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1 shrink-0" aria-hidden="true" />
+          <div className="hidden sm:block w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1 shrink-0" aria-hidden="true" />
 
-          <button
-            type="button"
-            title="Auto-Close Freehand Strokes"
-            aria-label="Auto-Close Freehand Strokes"
-            aria-pressed={state.guides.autoCloseFreehand}
-            onClick={onToggleAutoClose}
-            className={`p-2 rounded-lg transition-colors shrink-0 cursor-pointer ${
-              state.guides.autoCloseFreehand
-                ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950'
-                : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
-            }`}
-          >
-            <CircleDot className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
+          <div className="flex items-center justify-between sm:justify-center gap-1 w-full sm:w-auto border-t sm:border-t-0 border-slate-100 dark:border-slate-800 pt-1 sm:pt-0">
+            <button
+              type="button"
+              title="Auto-Close Freehand Strokes"
+              aria-label="Auto-Close Freehand Strokes"
+              aria-pressed={state.guides.autoCloseFreehand}
+              onClick={onToggleAutoClose}
+              className={`p-2 rounded-lg transition-colors shrink-0 cursor-pointer ${
+                state.guides.autoCloseFreehand
+                  ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}
+            >
+              <CircleDot className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
 
-          <button
-            type="button"
-            title="Simplify freehand stroke into clean polygon vertices"
-            onClick={onPolygonize}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
-          >
-            <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
-            <span>Polygonize</span>
-          </button>
+            <button
+              type="button"
+              title="Simplify freehand stroke into clean polygon vertices"
+              onClick={onPolygonize}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Polygonize</span>
+            </button>
 
-          <button
-            type="button"
-            title="Animate Similarity Scale Morph (T)"
-            aria-pressed={isAnimating}
-            onClick={onToggleAnimate}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-              isAnimating
-                ? 'bg-blue-600 text-white dark:bg-sky-500 dark:text-slate-950'
-                : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800'
-            }`}
-          >
-            {isAnimating ? <Pause className="w-3.5 h-3.5" aria-hidden="true" /> : <Play className="w-3.5 h-3.5" aria-hidden="true" />}
-            <span>{isAnimating ? 'Pause' : 'Morph'}</span>
-          </button>
+            <button
+              type="button"
+              title="Animate Similarity Scale Morph (T)"
+              aria-pressed={isAnimating}
+              onClick={onToggleAnimate}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                isAnimating
+                  ? 'bg-blue-600 text-white dark:bg-sky-500 dark:text-slate-950'
+                  : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800'
+              }`}
+            >
+              {isAnimating ? <Pause className="w-3.5 h-3.5" aria-hidden="true" /> : <Play className="w-3.5 h-3.5" aria-hidden="true" />}
+              <span>{isAnimating ? 'Pause' : 'Morph'}</span>
+            </button>
 
-          <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1 shrink-0" aria-hidden="true" />
+            <div className="hidden sm:block w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1 shrink-0" aria-hidden="true" />
 
-          <button
-            type="button"
-            title="Undo (Ctrl+Z)"
-            aria-label="Undo"
-            disabled={!canUndo}
-            onClick={onUndo}
-            className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-35 disabled:pointer-events-none dark:text-slate-300 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
-          >
-            <Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
+            <button
+              type="button"
+              title="Undo (Ctrl+Z)"
+              aria-label="Undo"
+              disabled={!canUndo}
+              onClick={onUndo}
+              className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-35 disabled:pointer-events-none dark:text-slate-300 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
+            >
+              <Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
 
-          <button
-            type="button"
-            title="Redo (Ctrl+Y)"
-            aria-label="Redo"
-            disabled={!canRedo}
-            onClick={onRedo}
-            className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-35 disabled:pointer-events-none dark:text-slate-300 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
-          >
-            <Redo2 className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
+            <button
+              type="button"
+              title="Redo (Ctrl+Y)"
+              aria-label="Redo"
+              disabled={!canRedo}
+              onClick={onRedo}
+              className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-35 disabled:pointer-events-none dark:text-slate-300 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
+            >
+              <Redo2 className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
 
-          <button
-            type="button"
-            title="Toggle Light / Obsidian Theme"
-            aria-label="Toggle Light or Dark Theme"
-            onClick={onToggleTheme}
-            className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
-          >
-            {themeMode === 'dark' ? <Sun className="w-3.5 h-3.5" aria-hidden="true" /> : <Moon className="w-3.5 h-3.5" aria-hidden="true" />}
-          </button>
+            <button
+              type="button"
+              title="Toggle Light / Obsidian Theme"
+              aria-label="Toggle Light or Dark Theme"
+              onClick={onToggleTheme}
+              className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
+            >
+              {themeMode === 'dark' ? <Sun className="w-3.5 h-3.5" aria-hidden="true" /> : <Moon className="w-3.5 h-3.5" aria-hidden="true" />}
+            </button>
 
-          <button
-            type="button"
-            title="Clear Canvas (Delete)"
-            aria-label="Clear Canvas"
-            onClick={() => {
-              isBrushingRef.current = false;
-              isPolyDrawingRef.current = false;
-              activeStrokeRef.current = [];
-              polyPointsRef.current = [];
-              onClear();
-            }}
-            className="p-2 rounded-lg text-slate-600 hover:text-red-600 hover:bg-red-50 dark:text-slate-300 dark:hover:text-red-400 dark:hover:bg-red-950/50 transition-colors shrink-0 cursor-pointer"
-          >
-            <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
+            <button
+              type="button"
+              title="Clear Canvas (Delete)"
+              aria-label="Clear Canvas"
+              onClick={() => {
+                isBrushingRef.current = false;
+                isPolyDrawingRef.current = false;
+                activeStrokeRef.current = [];
+                polyPointsRef.current = [];
+                setPolyUI({ active: false, count: 0 });
+                setSelectedVertexIdx(-1);
+                onClear();
+              }}
+              className="p-2 rounded-lg text-slate-600 hover:text-red-600 hover:bg-red-50 dark:text-slate-300 dark:hover:text-red-400 dark:hover:bg-red-950/50 transition-colors shrink-0 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </div>
     );

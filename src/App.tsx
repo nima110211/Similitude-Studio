@@ -268,7 +268,7 @@ export default function App() {
     <div
       data-stage-mode={state.stageMode}
       data-theme={themeMode}
-      className="min-h-screen lg:h-screen w-full lg:overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+      className="min-h-dvh lg:h-dvh w-full lg:overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
     >
       <TopBar
         stageMode={state.stageMode}

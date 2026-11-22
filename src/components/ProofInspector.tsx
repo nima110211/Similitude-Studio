@@ -88,8 +88,8 @@ export const ProofInspector: React.FC<ProofInspectorProps> = ({
 
   const hasClosedPolygon = state.shape.isClosed && state.shape.points.length >= 3;
   const defaultProofLine = hasClosedPolygon
-    ? 'Angles invariant (∠i = ∠i′) · Hover vertex/edge'
-    : 'Hover any vertex or edge to inspect correspondence';
+    ? 'Angles invariant (∠i = ∠i′) · Tap or hover vertex/edge'
+    : 'Tap or hover any vertex or edge to inspect';
 
   return (
     <aside
@@ -406,7 +406,7 @@ export const ProofInspector: React.FC<ProofInspectorProps> = ({
 
                 <label
                   title="Custom Color"
-                  className="w-6 h-6 rounded-full border border-slate-300 dark:border-slate-600 flex items-center justify-center text-xs font-bold text-slate-600 dark:text-slate-300 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 overflow-hidden"
+                  className="relative w-7 h-7 sm:w-6 sm:h-6 rounded-full border border-slate-300 dark:border-slate-600 flex items-center justify-center text-xs font-bold text-slate-600 dark:text-slate-300 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 overflow-hidden"
                 >
                   <span aria-hidden="true">+</span>
                   <input
@@ -414,7 +414,7 @@ export const ProofInspector: React.FC<ProofInspectorProps> = ({
                     aria-label="Custom twin color"
                     value={state.twin.colorHex}
                     onChange={(e) => onUpdateTwin({ colorHex: e.target.value.toUpperCase() })}
-                    className="sr-only"
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   />
                 </label>
               </div>

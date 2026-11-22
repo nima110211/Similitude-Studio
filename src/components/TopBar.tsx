@@ -28,110 +28,144 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   useEffect(() => {
     if (!menuOpen) return;
-    const handleOutside = (e: MouseEvent) => {
+    const handleOutside = (e: PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false);
       }
     };
-    window.addEventListener('mousedown', handleOutside);
-    return () => window.removeEventListener('mousedown', handleOutside);
+    window.addEventListener('pointerdown', handleOutside);
+    return () => window.removeEventListener('pointerdown', handleOutside);
   }, [menuOpen]);
 
   return (
-    <header className="h-14 shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-4 md:px-6 flex items-center justify-between gap-4 md:gap-8 z-30">
-      {/* Zone 1: Single-element brand wordmark */}
-      <a
-        href="#top"
-        onClick={(e) => e.preventDefault()}
-        className="text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0"
-      >
-        Similitude
-      </a>
+    <header className="shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 z-30">
+      <div className="h-12 md:h-14 px-3.5 md:px-6 flex items-center justify-between gap-3 md:gap-8">
+        {/* Zone 1: Single-element brand wordmark */}
+        <a
+          href="#top"
+          onClick={(e) => e.preventDefault()}
+          className="text-base md:text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0"
+        >
+          Similitude
+        </a>
 
-      {/* Zone 2: Clean single-line stage & specimen navigation */}
-      <nav
-        aria-label="Workspace Stage Modes"
-        className="flex items-center gap-3 md:gap-6 min-w-0"
-      >
-        <div className="flex items-center gap-3 md:gap-6 min-w-0 overflow-x-auto py-1">
-          {STAGE_ITEMS.map(({ mode, label }) => {
-            const active = stageMode === mode;
-            return (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => onStageModeChange(mode)}
-                aria-pressed={active}
-                className={`relative py-1.5 text-xs md:text-sm font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600 ${
-                  active
-                    ? 'text-slate-950 dark:text-white'
-                    : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
-                }`}
+        {/* Zone 2 (Desktop): Clean single-line stage & specimen navigation */}
+        <nav
+          aria-label="Workspace Stage Modes"
+          className="flex items-center gap-3 md:gap-6 min-w-0 ml-auto md:ml-0"
+        >
+          <div className="hidden md:flex items-center gap-6 min-w-0 py-1">
+            {STAGE_ITEMS.map(({ mode, label }) => {
+              const active = stageMode === mode;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onStageModeChange(mode)}
+                  aria-pressed={active}
+                  className={`relative py-1.5 text-sm font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600 ${
+                    active
+                      ? 'text-slate-950 dark:text-white'
+                      : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+                  }`}
+                >
+                  {label}
+                  {active && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-600 dark:bg-sky-400"
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          <div ref={menuRef} className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setMenuOpen((o) => !o)}
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+              className="flex items-center gap-1 py-1.5 px-1 text-xs md:text-sm font-medium text-slate-600 hover:text-slate-950 dark:text-slate-400 dark:hover:text-slate-100 whitespace-nowrap shrink-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600"
+            >
+              <span>Specimens</span>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {menuOpen && (
+              <div
+                role="menu"
+                aria-label="Geometric Specimens"
+                className="absolute right-0 md:left-0 md:right-auto top-full mt-2 w-64 max-w-[calc(100vw-24px)] rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-lg py-1.5 z-50"
               >
-                {label}
-                {active && (
-                  <span
-                    aria-hidden="true"
-                    className="absolute inset-x-0 bottom-0 h-0.5 bg-blue-600 dark:bg-sky-400"
-                  />
-                )}
-              </button>
-            );
-          })}
-        </div>
+                {specimens.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onSelectSpecimen(preset);
+                      setMenuOpen(false);
+                    }}
+                    className="w-full px-3.5 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/80 transition-colors flex flex-col gap-0.5 cursor-pointer"
+                  >
+                    <span className="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap">
+                      {preset.name}
+                    </span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                      {preset.subtitle}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </nav>
 
-        <div ref={menuRef} className="relative shrink-0">
+        {/* Zone 3: Single Primary Action */}
+        <div className="flex items-center shrink-0">
           <button
             type="button"
-            onClick={() => setMenuOpen((o) => !o)}
-            aria-expanded={menuOpen}
-            aria-haspopup="menu"
-            className="flex items-center gap-1 py-1.5 text-sm font-medium text-slate-600 hover:text-slate-950 dark:text-slate-400 dark:hover:text-slate-100 whitespace-nowrap shrink-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600"
+            onClick={onOpenExport}
+            className="inline-flex items-center gap-1.5 md:gap-2 px-3 md:px-4 py-1.5 md:py-2 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white text-white dark:text-slate-950 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
           >
-            <span>Specimens</span>
-            <ChevronDown className={`w-3.5 h-3.5 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
+            <Download className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Export</span>
           </button>
-
-          {menuOpen && (
-            <div
-              role="menu"
-              aria-label="Geometric Specimens"
-              className="absolute left-0 top-full mt-2 w-64 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-lg py-1.5 z-50"
-            >
-              {specimens.map((preset) => (
-                <button
-                  key={preset.id}
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    onSelectSpecimen(preset);
-                    setMenuOpen(false);
-                  }}
-                  className="w-full px-3.5 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/80 transition-colors flex flex-col gap-0.5 cursor-pointer"
-                >
-                  <span className="text-sm font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap">
-                    {preset.name}
-                  </span>
-                  <span className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                    {preset.subtitle}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
-      </nav>
+      </div>
 
-      {/* Zone 3: Single Primary Action */}
-      <div className="flex items-center shrink-0">
-        <button
-          type="button"
-          onClick={onOpenExport}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white text-white dark:text-slate-950 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
-        >
-          <Download className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Export</span>
-        </button>
+      {/* Mobile Stage Mode Sub-Bar: full-width, zero clipping on small screens */}
+      <div
+        role="group"
+        aria-label="Mobile Stage Modes"
+        className="grid grid-cols-3 border-t border-slate-100 dark:border-slate-800/80 md:hidden px-2"
+      >
+        {STAGE_ITEMS.map(({ mode, label }) => {
+          const active = stageMode === mode;
+          return (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => onStageModeChange(mode)}
+              aria-pressed={active}
+              className={`relative py-2 px-1 text-[11px] font-semibold text-center whitespace-nowrap transition-colors cursor-pointer ${
+                active
+                  ? 'text-slate-950 dark:text-white'
+                  : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+              }`}
+            >
+              {label}
+              {active && (
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-x-3 bottom-0 h-0.5 bg-blue-600 dark:bg-sky-400 rounded-full"
+                />
+              )}
+            </button>
+          );
+        })}
       </div>
     </header>
   );

@@ -65,18 +65,25 @@ export function generateSceneSvg(
   const srcFill = isDark ? '#FB923C' : '#0F172A';
   const gold = isDark ? '#FBBF24' : '#D97706';
 
-  const padX = 24;
-  const padTop = 20;
+  const padX = width < 640 ? 12 : 24;
+  const padTop = width < 640 ? 12 : 20;
   const padBot = 24;
-  const availW = Math.max(240, width - 2 * padX);
-  const availH = Math.max(240, height - padTop - padBot);
+  const availW = Math.max(200, width - 2 * padX);
+  const availH = Math.max(200, height - padTop - padBot);
 
   const boards: Array<{ x: number; y: number; w: number; h: number; title: string }> = [];
   if (state.stageMode === 'split') {
-    const gutter = 20;
-    const bw = (availW - gutter) * 0.5;
-    boards.push({ x: padX, y: padTop, w: bw, h: availH, title: '01 SOURCE CANVAS' });
-    boards.push({ x: padX + bw + gutter, y: padTop, w: bw, h: availH, title: '02 SIMILAR TWIN' });
+    if (width < 640) {
+      const gutter = 12;
+      const bh = (availH - gutter) * 0.5;
+      boards.push({ x: padX, y: padTop, w: availW, h: bh, title: '01 SOURCE CANVAS' });
+      boards.push({ x: padX, y: padTop + bh + gutter, w: availW, h: bh, title: '02 SIMILAR TWIN' });
+    } else {
+      const gutter = 20;
+      const bw = (availW - gutter) * 0.5;
+      boards.push({ x: padX, y: padTop, w: bw, h: availH, title: '01 SOURCE CANVAS' });
+      boards.push({ x: padX + bw + gutter, y: padTop, w: bw, h: availH, title: '02 SIMILAR TWIN' });
+    }
   } else {
     const title = state.stageMode === 'homothety' ? 'HOMOTHETY PROJECTION' : 'CENTROID OVERLAY PROOF';
     boards.push({ x: padX, y: padTop, w: availW, h: availH, title });
@@ -84,10 +91,18 @@ export function generateSceneSvg(
 
   const leftB = boards[0];
   const rightB = boards.length > 1 ? boards[1] : boards[0];
-  const toScreen = (p: Point, b: { x: number; y: number; w: number; h: number }): Point => ({
-    x: b.x + b.w * 0.5 + (p.x + pan.x) * zoom,
-    y: b.y + b.h * 0.5 + (p.y + pan.y) * zoom,
-  });
+  const toScreen = (p: Point, b: { x: number; y: number; w: number; h: number }): Point => {
+    const fitFactor =
+      b.w < 460 || b.h < 320
+        ? Math.max(0.4, Math.min((b.w - 16) / 520, (b.h - 22) / 340))
+        : 1;
+    const ez = zoom * fitFactor;
+    const cyOff = b.h < 250 ? 6 : 0;
+    return {
+      x: b.x + b.w * 0.5 + (p.x + pan.x) * ez,
+      y: b.y + b.h * 0.5 + cyOff + (p.y + pan.y) * ez,
+    };
+  };
 
   const pts = state.shape.points;
   const twinPts = transformPoints(pts, {
